@@ -1,17 +1,41 @@
 {
   "name": "@moshcoder/moshpit-resolve",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "license": "MIT",
   "description": "The Moshpit resolution policy: which namespace answers a name, and where a navigation ends up. Pure decisions, config supplied by the caller.",
-  "keywords": ["moshpit", "resolver", "namespace", "browser"],
-  "repository": { "type": "git", "url": "git+https://github.com/moshcoder/moshpit-resolve.git" },
+  "keywords": [
+    "moshpit",
+    "resolver",
+    "namespace",
+    "browser"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/moshcoder/moshpit-resolve.git"
+  },
   "homepage": "https://github.com/moshcoder/moshpit-resolve",
   "main": "lib/index.mjs",
-  "exports": { ".": "./lib/index.mjs" },
-  "bin": { "moshpit-resolve": "bin/moshpit-resolve.mjs" },
-  "files": ["bin", "lib", "README.md", "LICENSE"],
-  "scripts": { "test": "node --test test/*.test.mjs" },
-  "engines": { "node": ">=18" },
-  "publishConfig": { "access": "public" }
+  "exports": {
+    ".": "./lib/index.mjs",
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "moshpit-resolve": "bin/moshpit-resolve.mjs"
+  },
+  "files": [
+    "bin",
+    "lib",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
 }
