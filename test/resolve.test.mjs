@@ -207,6 +207,32 @@ test("resolutionFor explains a navigation with one registry lookup", async (t) =
   }
 });
 
+test("resolutionFor forwards a custom registry timeout", async (t) => {
+  const server = createServer((_request, response) => {
+    const timer = setTimeout(() => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ name_registered: true, target: "203.0.113.9" }));
+    }, 3000);
+    timer.unref();
+    response.on("close", () => clearTimeout(timer));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const started = Date.now();
+  const result = await resolutionFor("slow.eggs", false, {
+    registryBase: `http://127.0.0.1:${server.address().port}`,
+    timeoutMs: 100,
+  });
+  const elapsed = Date.now() - started;
+
+  assert.equal(result.registry, null);
+  assert.equal(result.decision.use, "clearnet");
+  assert.equal(result.destination, null);
+  assert.ok(elapsed < 1500, `configured timeout took ${elapsed}ms`);
+});
+
 test("dashes are not part of a Moshpit name", () => {
   // Kept identical to the registry: a name this accepts and the registry
   // rejects sends a tab to a page saying it does not exist.
