@@ -138,7 +138,23 @@ test("resolutionFor explains a navigation with one registry lookup", async (t) =
       assert.deepEqual(requests, ["live.eggs"], "the trace must not repeat the registry lookup");
     });
 
+    await t.test("mode controls whether a clearnet answer is overridden", async () => {
+      const before = requests.length;
+      const clearnet = await resolutionFor("live.eggs", true, { registryBase });
+      const override = await resolutionFor("live.eggs", true, {
+        registryBase,
+        mode: "moshpit",
+      });
+
+      assert.equal(clearnet.decision.use, "clearnet");
+      assert.equal(clearnet.destination, null);
+      assert.equal(override.decision.use, "moshpit");
+      assert.equal(override.destination, `${registryBase}/n/live.eggs`);
+      assert.deepEqual(requests.slice(before), ["live.eggs", "live.eggs"]);
+    });
+
     await t.test("parked and unclaimed names keep their distinct reasons", async () => {
+      const before = requests.length;
       const config = { registryBase, parkingBase: "https://parking.example/base/" };
       const parkedResult = await resolutionFor("parked.eggs", false, config);
       const openResult = await resolutionFor("open.eggs", false, config);
@@ -152,7 +168,7 @@ test("resolutionFor explains a navigation with one registry lookup", async (t) =
       assert.equal(openResult.decision.use, "park");
       assert.match(openResult.decision.reason, /unclaimed/);
       assert.equal(openResult.destination, "https://parking.example/base/n/open.eggs");
-      assert.deepEqual(requests, ["live.eggs", "parked.eggs", "open.eggs"]);
+      assert.deepEqual(requests.slice(before), ["parked.eggs", "open.eggs"]);
     });
 
     await t.test("invalid names and the console label skip the registry", async () => {
