@@ -4,11 +4,13 @@
 // these rules over the same inputs and required identical answers. There is one
 // copy now, so the tests can be about the behaviour instead of about the drift.
 import assert from "node:assert/strict";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import test from "node:test";
 
 import {
   consoleUrlFor, decideResolution, destinationFor, gatewayUrlFor,
-  moshpitBypassHosts, parkingUrlFor, parseRegistryName,
+  moshpitBypassHosts, parkingUrlFor, parseRegistryName, resolutionFor,
 } from "../lib/index.mjs";
 
 const live = { registered: true, name_registered: true, resolved: "blue.eggs", target: "203.0.113.9" };
@@ -97,4 +99,94 @@ test("config is supplied, not discovered", async () => {
   // extension; this one is handed its config and works anywhere.
   const url = await destinationFor("mosh.eggs", false, { consoleBase: "https://my.console" });
   assert.equal(url, "https://my.console/pit?tld=eggs");
+});
+
+test("resolutionFor explains a navigation with one registry lookup", async (t) => {
+  const requests = [];
+  const answers = {
+    "live.eggs": { name_registered: true, resolved: "live.eggs", target: "203.0.113.9" },
+    "parked.eggs": { name_registered: true, resolved: "parked.eggs", target: null },
+    "open.eggs": { name_registered: false, resolved: "open.eggs", target: null },
+  };
+  const server = createServer((request, response) => {
+    const name = new URL(request.url, "http://127.0.0.1").searchParams.get("name");
+    requests.push(name);
+    if (!answers[name]) {
+      response.writeHead(503).end();
+      return;
+    }
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify(answers[name]));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+
+  try {
+    const registryBase = `http://127.0.0.1:${server.address().port}`;
+
+    await t.test("a live name includes the answer, decision and destination", async () => {
+      const result = await resolutionFor(" LIVE.EGGS. ", false, { registryBase });
+      assert.deepEqual(result, {
+        registry: { registered: true, resolved: "live.eggs", target: "203.0.113.9" },
+        decision: {
+          use: "moshpit",
+          reason: "clearnet has no answer — resolved through Moshpit",
+          resolved: "live.eggs",
+        },
+        destination: `${registryBase}/n/live.eggs`,
+      });
+      assert.deepEqual(requests, ["live.eggs"], "the trace must not repeat the registry lookup");
+    });
+
+    await t.test("parked and unclaimed names keep their distinct reasons", async () => {
+      const config = { registryBase, parkingBase: "https://parking.example/base/" };
+      const parkedResult = await resolutionFor("parked.eggs", false, config);
+      const openResult = await resolutionFor("open.eggs", false, config);
+
+      assert.equal(parkedResult.registry.registered, true);
+      assert.equal(parkedResult.decision.use, "park");
+      assert.match(parkedResult.decision.reason, /not pointed/);
+      assert.equal(parkedResult.destination, "https://parking.example/base/n/parked.eggs");
+
+      assert.equal(openResult.registry.registered, false);
+      assert.equal(openResult.decision.use, "park");
+      assert.match(openResult.decision.reason, /unclaimed/);
+      assert.equal(openResult.destination, "https://parking.example/base/n/open.eggs");
+      assert.deepEqual(requests, ["live.eggs", "parked.eggs", "open.eggs"]);
+    });
+
+    await t.test("invalid names and the console label skip the registry", async () => {
+      const before = requests.length;
+      assert.deepEqual(await resolutionFor("a.b.c", false, { registryBase }), {
+        registry: null,
+        decision: { use: "clearnet", reason: "not a Moshpit name" },
+        destination: null,
+      });
+
+      assert.deepEqual(await resolutionFor("mosh.eggs", false, {
+        registryBase,
+        consoleBase: "https://console.example/",
+      }), {
+        registry: null,
+        decision: {
+          use: "register",
+          reason: "mosh.eggs is the registration console for .eggs",
+          url: "https://console.example/pit?tld=eggs",
+        },
+        destination: "https://console.example/pit?tld=eggs",
+      });
+      assert.equal(requests.length, before);
+    });
+
+    await t.test("an unavailable registry still returns a complete trace", async () => {
+      assert.deepEqual(await resolutionFor("down.eggs", false, { registryBase }), {
+        registry: null,
+        decision: { use: "clearnet", reason: "Moshpit registry not consulted or unreachable" },
+        destination: null,
+      });
+      assert.equal(requests.at(-1), "down.eggs");
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

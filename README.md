@@ -14,6 +14,24 @@ await destinationFor("blue.eggs", /* clearnetResolves */ false);
 // → https://pit.moshcode.sh/n/blue.eggs
 ```
 
+Applications that also need to explain the navigation can get the registry
+answer, policy decision and destination together. This performs at most one
+registry lookup:
+
+```js
+import { resolutionFor } from "@moshcoder/moshpit-resolve";
+
+const resolution = await resolutionFor(hostname, dnsAnswered, settings);
+
+status.textContent = resolution.decision.reason;
+if (resolution.destination) navigate(resolution.destination);
+```
+
+`resolutionFor` always returns `{ registry, decision, destination }`. Invalid
+names and unavailable registries still produce a complete trace with a
+clearnet decision and a null destination, so an app does not need a separate
+error shape for those cases.
+
 ## Why it is a package
 
 These rules lived twice in TronBrowser: a TypeScript module, and a hand port of
