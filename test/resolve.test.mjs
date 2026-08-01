@@ -206,3 +206,13 @@ test("resolutionFor explains a navigation with one registry lookup", async (t) =
     await new Promise((resolve) => server.close(resolve));
   }
 });
+
+test("dashes are not part of a Moshpit name", () => {
+  // Kept identical to the registry: a name this accepts and the registry
+  // rejects sends a tab to a page saying it does not exist.
+  for (const host of ["lazy-loaded.eggs", "blue.lazy-loaded", "register-me.eggs", "a-b.c-d"]) {
+    assert.equal(parseRegistryName(host), null, host);
+  }
+  assert.deepEqual(parseRegistryName("california.oranges"), { label: "california", tld: "oranges" });
+  assert.deepEqual(parseRegistryName("blue.420"), { label: "blue", tld: "420" });
+});
