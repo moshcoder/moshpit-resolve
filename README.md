@@ -48,7 +48,7 @@ would only work in one of those places.
 ## CLI
 
 ```sh
-moshpit-resolve <name> [--moshpit] [--clearnet-resolves] [--registry URL]
+moshpit-resolve <name> [--moshpit] [--clearnet-resolves] [--registry URL] [--json]
 ```
 
 ```
@@ -62,6 +62,9 @@ california.oranges
 
 The reason line is the point: it is the same decision the browser makes on
 every navigation, and the thing you need when a name goes somewhere unexpected.
+
+Use `--json` when another tool needs the registry answer, decision, reason, and
+destination without parsing the human-readable summary.
 
 ## License
 
