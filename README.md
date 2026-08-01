@@ -66,7 +66,7 @@ would only work in one of those places.
 ## CLI
 
 ```sh
-moshpit-resolve <name> [--moshpit] [--clearnet-resolves] [--registry URL] [--json]
+moshpit-resolve <name> [--moshpit] [--clearnet-resolves] [--registry URL] [--timeout MS] [--json]
 ```
 
 ```
@@ -83,6 +83,13 @@ every navigation, and the thing you need when a name goes somewhere unexpected.
 
 Use `--json` when another tool needs the registry answer, decision, reason, and
 destination without parsing the human-readable summary.
+
+Registry lookups use an eight-second deadline by default. Scripts and
+self-hosted deployments can lower it without changing the resolution policy:
+
+```sh
+moshpit-resolve blue.eggs --registry http://127.0.0.1:8787 --timeout 1500
+```
 
 ## License
 
