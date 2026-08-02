@@ -10,26 +10,41 @@ import {
 
 const USAGE = `moshpit-resolve — where a Moshpit name would send you
 
-  moshpit-resolve <name> [--moshpit] [--clearnet-resolves] [--registry URL] [--timeout MS]
+  moshpit-resolve <name> [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS]
 
   --moshpit             let a registered name beat a clearnet answer
   --clearnet-resolves   pretend the real internet has an answer for this name
   --registry URL        a self-hosted pit
+  --console URL         a custom namespace management console
+  --parking URL         a custom base for unpointed names
   --timeout MS          registry request deadline (default: ${DEFAULT_LOOKUP_TIMEOUT_MS})
   --json                print a machine-readable resolution decision
 
 Prints the destination and the reason for it. No browser, no navigation.`;
 
 const args = process.argv.slice(2);
-const valueFlags = new Set(["--registry", "--timeout"]);
+const valueFlags = new Set(["--registry", "--console", "--parking", "--timeout"]);
 const positional = args.filter((a, i) => !a.startsWith("--") && !valueFlags.has(args[i - 1]));
 const name = positional[0];
 if (!name || args.includes("--help")) { console.log(USAGE); process.exit(name ? 0 : 1); }
 
 const flag = (n) => args.includes(`--${n}`);
-const value = (n, d) => { const i = args.indexOf(`--${n}`); return i >= 0 && args[i + 1] ? args[i + 1] : d; };
+const value = (n, d) => {
+  const i = args.indexOf(`--${n}`);
+  const candidate = i >= 0 ? args[i + 1] : null;
+  return candidate && !candidate.startsWith("-") ? candidate : d;
+};
 const raw = flag("json");
 const timeoutValue = value("timeout", null);
+
+for (const option of ["registry", "console", "parking"]) {
+  if (flag(option) && value(option, null) === null) {
+    const error = `--${option} requires a URL`;
+    if (raw) console.log(JSON.stringify({ name, error }));
+    else console.error(`moshpit-resolve: ${error}`);
+    process.exit(1);
+  }
+}
 
 if (args.includes("--timeout") && (
   !/^\d+$/.test(String(timeoutValue ?? ""))
@@ -51,6 +66,8 @@ if (!parseRegistryName(name)) {
 const config = {
   mode: flag("moshpit") ? "moshpit" : "clearnet",
   registryBase: value("registry", undefined),
+  consoleBase: value("console", undefined),
+  parkingBase: value("parking", undefined),
   timeoutMs: timeoutValue === null ? DEFAULT_LOOKUP_TIMEOUT_MS : Number(timeoutValue),
 };
 const {

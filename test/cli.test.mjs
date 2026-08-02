@@ -69,6 +69,89 @@ test("--json prints the complete machine-readable resolution", async () => {
   }
 });
 
+test("--console sends namespace-management names to a custom console", async () => {
+  const result = await run([
+    "--console", "https://console.example/custom/",
+    "mosh.eggs",
+    "--json",
+  ]);
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(JSON.parse(result.stdout), {
+    name: "mosh.eggs",
+    registry: null,
+    decision: {
+      use: "register",
+      reason: "mosh.eggs is the registration console for .eggs",
+      url: "https://console.example/custom/pit?tld=eggs",
+    },
+    destination: "https://console.example/custom/pit?tld=eggs",
+  });
+});
+
+test("--parking sends unpointed names to a custom parking base", async () => {
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests++;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      registered: false,
+      name_registered: false,
+      resolved: "blue.eggs",
+      target: null,
+    }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+
+  try {
+    const result = await run([
+      "--registry", `http://127.0.0.1:${server.address().port}`,
+      "--parking", "https://parking.example/custom/",
+      "blue.eggs",
+      "--json",
+    ]);
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stderr, "");
+    assert.deepEqual(JSON.parse(result.stdout), {
+      name: "blue.eggs",
+      registry: {
+        registered: false,
+        resolved: "blue.eggs",
+        target: null,
+      },
+      decision: {
+        use: "park",
+        reason: "unclaimed Moshpit name — parked",
+        url: "https://parking.example/custom/n/blue.eggs",
+      },
+      destination: "https://parking.example/custom/n/blue.eggs",
+    });
+    assert.equal(requests, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("URL options reject missing values without consuming another option", async () => {
+  for (const option of ["registry", "console", "parking"]) {
+    const human = await run(["mosh.eggs", `--${option}`]);
+    assert.equal(human.status, 1, option);
+    assert.equal(human.stdout, "", option);
+    assert.equal(human.stderr, `moshpit-resolve: --${option} requires a URL\n`, option);
+
+    const json = await run(["mosh.eggs", `--${option}`, "--json"]);
+    assert.equal(json.status, 1, option);
+    assert.equal(json.stderr, "", option);
+    assert.deepEqual(JSON.parse(json.stdout), {
+      name: "mosh.eggs",
+      error: `--${option} requires a URL`,
+    });
+  }
+});
+
 test("--json keeps invalid-name errors machine-readable", async () => {
   const result = await run(["localhost", "--json"]);
 

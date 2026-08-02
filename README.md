@@ -66,7 +66,7 @@ would only work in one of those places.
 ## CLI
 
 ```sh
-moshpit-resolve <name> [--moshpit] [--clearnet-resolves] [--registry URL] [--timeout MS] [--json]
+moshpit-resolve <name> [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--json]
 ```
 
 ```
@@ -89,6 +89,16 @@ self-hosted deployments can lower it without changing the resolution policy:
 
 ```sh
 moshpit-resolve blue.eggs --registry http://127.0.0.1:8787 --timeout 1500
+```
+
+Self-hosted deployments can also route namespace-management names and
+unpointed names independently. `--console` supplies the base for
+`mosh.<ending>`, while `--parking` supplies the base for names that have no
+destination yet:
+
+```sh
+moshpit-resolve mosh.eggs --console https://console.example --json
+moshpit-resolve blue.eggs --parking https://parking.example --json
 ```
 
 ## License
