@@ -1,6 +1,6 @@
 {
   "name": "@moshcoder/moshpit-resolve",
-  "version": "0.1.1",
+  "version": "0.1.3",
   "type": "module",
   "license": "MIT",
   "description": "The Moshpit resolution policy: which namespace answers a name, and where a navigation ends up. Pure decisions, config supplied by the caller.",
