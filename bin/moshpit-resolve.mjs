@@ -10,7 +10,7 @@ import {
 
 const USAGE = `moshpit-resolve — where a Moshpit name would send you
 
-  moshpit-resolve <name...> [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--concurrency N] [--strict]
+  moshpit-resolve [<name...>] [--stdin] [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--concurrency N] [--strict] [--json]
 
   --moshpit             let a registered name beat a clearnet answer
   --clearnet-resolves   pretend the real internet has an answer for this name
@@ -20,20 +20,22 @@ const USAGE = `moshpit-resolve — where a Moshpit name would send you
   --timeout MS          registry request deadline (default: ${DEFAULT_LOOKUP_TIMEOUT_MS})
   --concurrency N       maximum simultaneous batch lookups (default: ${DEFAULT_CONCURRENCY})
   --strict              fail when any registry lookup is inconclusive
+  --stdin               append whitespace-delimited names from standard input
   --json                print a machine-readable resolution decision
 
 Prints the destination and the reason for it. No browser, no navigation.`;
 
 const args = process.argv.slice(2);
+const flag = (n) => args.includes(`--${n}`);
 const valueFlags = new Set([
   "--registry", "--console", "--parking", "--timeout", "--concurrency",
 ]);
 const positional = args.filter((a, i) => !a.startsWith("--") && !valueFlags.has(args[i - 1]));
-const names = positional;
-const name = names[0];
-if (!name || args.includes("--help")) { console.log(USAGE); process.exit(name ? 0 : 1); }
+const names = [...positional];
+let name = names[0];
+if (flag("help")) { console.log(USAGE); process.exit(name ? 0 : 1); }
+if (!name && !flag("stdin")) { console.log(USAGE); process.exit(1); }
 
-const flag = (n) => args.includes(`--${n}`);
 const value = (n, d) => {
   const i = args.indexOf(`--${n}`);
   const candidate = i >= 0 ? args[i + 1] : null;
@@ -42,9 +44,11 @@ const value = (n, d) => {
 const raw = flag("json");
 const timeoutValue = value("timeout", null);
 const concurrencyValue = value("concurrency", null);
-const jsonError = (error) => names.length === 1
-  ? { name, error }
-  : names.map((requestedName) => ({ name: requestedName, error }));
+const jsonError = (error) => {
+  if (names.length === 0) return { error };
+  if (names.length === 1) return { name, error };
+  return names.map((requestedName) => ({ name: requestedName, error }));
+};
 const printJsonError = (error) => new Promise((resolve, reject) => {
   const output = `${JSON.stringify(
     jsonError(error), null, names.length > 1 ? 2 : undefined,
@@ -84,6 +88,22 @@ if (args.includes("--concurrency") && (
   if (raw) await printJsonError(error);
   else console.error(`moshpit-resolve: ${error}`);
   process.exit(1);
+}
+
+if (flag("stdin")) {
+  try {
+    process.stdin.setEncoding("utf8");
+    let input = "";
+    for await (const chunk of process.stdin) input += chunk;
+    names.push(...input.split(/\s+/u).filter(Boolean));
+    name = names[0];
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    const error = `failed to read standard input: ${detail}`;
+    if (raw) await printJsonError(error);
+    else console.error(`moshpit-resolve: ${error}`);
+    process.exit(1);
+  }
 }
 
 const config = {
