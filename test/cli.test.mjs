@@ -216,3 +216,109 @@ test("--timeout aborts a slow registry lookup", async (t) => {
   assert.equal(requests, 1);
   assert.ok(elapsed < 1500, `configured timeout took ${elapsed}ms`);
 });
+
+test("--strict reports an unavailable registry through the exit status", async (t) => {
+  let requests = 0;
+  const server = createServer((_request, response) => {
+    requests++;
+    response.writeHead(503);
+    response.end();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const args = [
+    "blue.eggs",
+    "--registry", `http://127.0.0.1:${server.address().port}`,
+    "--json",
+  ];
+  const normal = await run(args);
+  const strict = await run([...args, "--strict"]);
+  const strictOverride = await run([
+    ...args,
+    "--moshpit",
+    "--clearnet-resolves",
+    "--strict",
+  ]);
+
+  assert.equal(normal.status, 0, normal.stderr || normal.stdout);
+  assert.equal(strict.status, 1);
+  assert.equal(strictOverride.status, 1);
+  assert.equal(strict.stderr, "");
+  assert.deepEqual(JSON.parse(strict.stdout), JSON.parse(normal.stdout));
+  assert.deepEqual(JSON.parse(strict.stdout), {
+    name: "blue.eggs",
+    registry: null,
+    decision: {
+      use: "clearnet",
+      reason: "Moshpit registry not consulted or unreachable",
+    },
+    destination: null,
+  });
+  assert.equal(JSON.parse(strictOverride.stdout).decision.reason,
+    "Moshpit registry not consulted or unreachable");
+  assert.equal(requests, 3);
+});
+
+test("--strict keeps conclusive resolution paths successful", async (t) => {
+  let requests = 0;
+  const server = createServer((request, response) => {
+    requests++;
+    const name = new URL(request.url, "http://127.0.0.1").searchParams.get("name");
+    const parked = name === "parked.eggs";
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      name_registered: !parked,
+      resolved: name,
+      target: parked ? null : "203.0.113.9",
+    }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const registry = `http://127.0.0.1:${server.address().port}`;
+  const cases = [
+    ["mosh.eggs", "--console", "https://console.example", "--strict", "--json"],
+    ["mosh.eggs", "--clearnet-resolves", "--strict", "--json"],
+    ["parked.eggs", "--registry", registry, "--strict", "--json"],
+    ["live.eggs", "--registry", registry, "--moshpit", "--strict", "--json"],
+    ["live.eggs", "--registry", registry, "--clearnet-resolves", "--strict", "--json"],
+  ];
+
+  const results = await Promise.all(cases.map(run));
+  for (const result of results) {
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.equal(result.stderr, "");
+  }
+
+  const registryBackedClearnet = JSON.parse(results.at(-1).stdout);
+  assert.equal(registryBackedClearnet.decision.use, "clearnet");
+  assert.ok(registryBackedClearnet.registry);
+  assert.equal(registryBackedClearnet.destination, null);
+  assert.equal(requests, 3);
+});
+
+test("--strict preserves human-readable output before failing", async (t) => {
+  const server = createServer((_request, response) => {
+    response.writeHead(503);
+    response.end();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const result = await run([
+    "blue.eggs",
+    "--registry", `http://127.0.0.1:${server.address().port}`,
+    "--strict",
+  ]);
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  assert.match(result.stdout, /^blue\.eggs\n/);
+  assert.match(result.stdout, /registry\s+unreachable/);
+  assert.match(result.stdout, /decision\s+clearnet/);
+  assert.match(result.stdout, /goes to\s+\(nowhere/);
+});

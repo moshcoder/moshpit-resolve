@@ -66,7 +66,7 @@ would only work in one of those places.
 ## CLI
 
 ```sh
-moshpit-resolve <name> [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--json]
+moshpit-resolve <name> [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--strict] [--json]
 ```
 
 ```
@@ -83,6 +83,11 @@ every navigation, and the thing you need when a name goes somewhere unexpected.
 
 Use `--json` when another tool needs the registry answer, decision, reason, and
 destination without parsing the human-readable summary.
+
+By default, an unavailable registry still exits successfully after reporting
+the clearnet fallback. Scripts can add `--strict` to exit non-zero when the
+registry lookup is inconclusive. Resolved, parked, registry-backed clearnet,
+and reserved console decisions still exit successfully.
 
 Registry lookups use an eight-second deadline by default. Scripts and
 self-hosted deployments can lower it without changing the resolution policy:
