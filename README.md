@@ -66,7 +66,7 @@ would only work in one of those places.
 ## CLI
 
 ```sh
-moshpit-resolve <name...> [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--concurrency N] [--strict] [--json]
+moshpit-resolve [<name...>] [--stdin] [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--concurrency N] [--strict] [--json]
 ```
 
 ```
@@ -99,6 +99,17 @@ existing single-name JSON object is unchanged.
 ```sh
 moshpit-resolve blue.eggs red.eggs missing.eggs --json
 moshpit-resolve one.eggs two.eggs three.eggs --concurrency 2
+```
+
+Use `--stdin` to pipe names from another command or read a whitespace-delimited
+file. Command-line names come first, followed by names from standard input; the
+same ordering, concurrency, exit-status, and JSON-shape rules apply. Input is
+read until EOF. An empty input is a successful empty batch and prints `[]` with
+`--json`.
+
+```sh
+printf 'blue.eggs\nred.eggs\n' | moshpit-resolve --stdin --json
+cat names.txt | moshpit-resolve pinned.eggs --stdin --strict
 ```
 
 Registry lookups use an eight-second deadline by default. Scripts and

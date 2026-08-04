@@ -9,10 +9,12 @@ import { DEFAULT_CONCURRENCY } from "../lib/index.mjs";
 
 const BIN = fileURLToPath(new URL("../bin/moshpit-resolve.mjs", import.meta.url));
 
-function run(args, { stdoutDelayMs = 0 } = {}) {
+function run(args, {
+  stdoutDelayMs = 0, stdin = null, keepStdinOpen = false, timeoutMs = 5000,
+} = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [BIN, ...args], {
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [stdin === null ? "ignore" : "pipe", "pipe", "pipe"],
     });
     let stdout = "";
     let stderr = "";
@@ -21,8 +23,25 @@ function run(args, { stdoutDelayMs = 0 } = {}) {
     if (stdoutDelayMs > 0) child.stdout.pause();
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
-    child.on("error", reject);
-    child.on("close", (status) => resolve({ status, stdout, stderr }));
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`CLI did not exit within ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    if (stdin !== null) {
+      child.stdin.on("error", (error) => {
+        if (error.code !== "EPIPE") reject(error);
+      });
+      child.stdin.write(stdin);
+      if (!keepStdinOpen) child.stdin.end();
+    }
+    child.on("close", (status) => {
+      clearTimeout(timer);
+      resolve({ status, stdout, stderr });
+    });
     if (stdoutDelayMs > 0) {
       setTimeout(() => child.stdout.resume(), stdoutDelayMs);
     }
@@ -416,6 +435,129 @@ test("batch resolution bounds concurrency and coalesces normalized duplicates", 
     `default concurrency limit exceeded: ${maxActive}`,
   );
   assert.deepEqual(JSON.parse(defaults.stdout).map(({ name }) => name), defaultNames);
+});
+
+test("--stdin appends whitespace-delimited names in input order", async () => {
+  const result = await run([
+    "mosh.eggs",
+    "--stdin",
+    "--console", "https://console.example",
+    "--json",
+  ], {
+    stdin: "mosh.oranges\r\n\r\nlocalhost\tmosh.apples\r\n",
+  });
+  const output = JSON.parse(result.stdout);
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(output.map(({ name }) => name), [
+    "mosh.eggs", "mosh.oranges", "localhost", "mosh.apples",
+  ]);
+  assert.equal(output[0].destination, "https://console.example/pit?tld=eggs");
+  assert.equal(output[1].destination, "https://console.example/pit?tld=oranges");
+  assert.deepEqual(output[2], {
+    name: "localhost",
+    error: "not a Moshpit name (one label and one ending)",
+  });
+  assert.equal(output[3].destination, "https://console.example/pit?tld=apples");
+});
+
+test("--stdin keeps single-name JSON output as an object", async () => {
+  const result = await run([
+    "--stdin",
+    "--console", "https://console.example",
+    "--json",
+  ], {
+    stdin: "  mosh.eggs  \n",
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(JSON.parse(result.stdout), {
+    name: "mosh.eggs",
+    registry: null,
+    decision: {
+      use: "register",
+      reason: "mosh.eggs is the registration console for .eggs",
+      url: "https://console.example/pit?tld=eggs",
+    },
+    destination: "https://console.example/pit?tld=eggs",
+  });
+});
+
+test("empty stdin is a successful empty batch", async () => {
+  const human = await run(["--stdin"], { stdin: " \n\t " });
+  const json = await run(["--stdin", "--json"], { stdin: "" });
+
+  assert.deepEqual(human, { status: 0, stdout: "", stderr: "" });
+  assert.equal(json.status, 0);
+  assert.equal(json.stderr, "");
+  assert.deepEqual(JSON.parse(json.stdout), []);
+});
+
+test("argument errors are reported before waiting for stdin", async () => {
+  const result = await run([
+    "--stdin", "--timeout", "0", "--json",
+  ], {
+    stdin: "",
+    keepStdinOpen: true,
+    timeoutMs: 750,
+  });
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(JSON.parse(result.stdout), {
+    error: "--timeout must be a positive integer in milliseconds",
+  });
+});
+
+test("stdin is untouched unless --stdin is present", async () => {
+  const result = await run([
+    "mosh.eggs", "--console", "https://console.example", "--json",
+  ], {
+    stdin: "ignored.eggs\n",
+    keepStdinOpen: true,
+    timeoutMs: 750,
+  });
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(JSON.parse(result.stdout).name, "mosh.eggs");
+});
+
+test("--help preserves its existing exit statuses", async () => {
+  const withoutName = await run(["--help"]);
+  const withName = await run(["mosh.eggs", "--help"]);
+
+  assert.equal(withoutName.status, 1);
+  assert.match(withoutName.stdout, /^moshpit-resolve/);
+  assert.equal(withName.status, 0);
+  assert.equal(withName.stdout, withoutName.stdout);
+});
+
+test("--strict applies to names read from stdin", async (t) => {
+  const server = createServer((_request, response) => {
+    response.writeHead(503);
+    response.end();
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const result = await run([
+    "--stdin",
+    "--registry", `http://127.0.0.1:${server.address().port}`,
+    "--strict",
+    "--json",
+  ], {
+    stdin: "blue.eggs\n",
+  });
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  assert.equal(
+    JSON.parse(result.stdout).decision.reason,
+    "Moshpit registry not consulted or unreachable",
+  );
 });
 
 test("--strict reports an unavailable registry through the exit status", async (t) => {
