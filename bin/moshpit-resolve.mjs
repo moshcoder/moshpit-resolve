@@ -5,12 +5,12 @@
 // reason — which is the part you need when a name goes somewhere unexpected.
 
 import {
-  DEFAULT_LOOKUP_TIMEOUT_MS, parseRegistryName, resolutionFor,
+  DEFAULT_CONCURRENCY, DEFAULT_LOOKUP_TIMEOUT_MS, parseRegistryName, resolutionFor,
 } from "../lib/index.mjs";
 
 const USAGE = `moshpit-resolve — where a Moshpit name would send you
 
-  moshpit-resolve <name> [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--strict]
+  moshpit-resolve <name...> [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--concurrency N] [--strict]
 
   --moshpit             let a registered name beat a clearnet answer
   --clearnet-resolves   pretend the real internet has an answer for this name
@@ -18,15 +18,19 @@ const USAGE = `moshpit-resolve — where a Moshpit name would send you
   --console URL         a custom namespace management console
   --parking URL         a custom base for unpointed names
   --timeout MS          registry request deadline (default: ${DEFAULT_LOOKUP_TIMEOUT_MS})
-  --strict              fail when the registry lookup is inconclusive
+  --concurrency N       maximum simultaneous batch lookups (default: ${DEFAULT_CONCURRENCY})
+  --strict              fail when any registry lookup is inconclusive
   --json                print a machine-readable resolution decision
 
 Prints the destination and the reason for it. No browser, no navigation.`;
 
 const args = process.argv.slice(2);
-const valueFlags = new Set(["--registry", "--console", "--parking", "--timeout"]);
+const valueFlags = new Set([
+  "--registry", "--console", "--parking", "--timeout", "--concurrency",
+]);
 const positional = args.filter((a, i) => !a.startsWith("--") && !valueFlags.has(args[i - 1]));
-const name = positional[0];
+const names = positional;
+const name = names[0];
 if (!name || args.includes("--help")) { console.log(USAGE); process.exit(name ? 0 : 1); }
 
 const flag = (n) => args.includes(`--${n}`);
@@ -37,11 +41,24 @@ const value = (n, d) => {
 };
 const raw = flag("json");
 const timeoutValue = value("timeout", null);
+const concurrencyValue = value("concurrency", null);
+const jsonError = (error) => names.length === 1
+  ? { name, error }
+  : names.map((requestedName) => ({ name: requestedName, error }));
+const printJsonError = (error) => new Promise((resolve, reject) => {
+  const output = `${JSON.stringify(
+    jsonError(error), null, names.length > 1 ? 2 : undefined,
+  )}\n`;
+  process.stdout.write(output, (writeError) => {
+    if (writeError) reject(writeError);
+    else resolve();
+  });
+});
 
 for (const option of ["registry", "console", "parking"]) {
   if (flag(option) && value(option, null) === null) {
     const error = `--${option} requires a URL`;
-    if (raw) console.log(JSON.stringify({ name, error }));
+    if (raw) await printJsonError(error);
     else console.error(`moshpit-resolve: ${error}`);
     process.exit(1);
   }
@@ -53,14 +70,19 @@ if (args.includes("--timeout") && (
   || Number(timeoutValue) < 1
 )) {
   const error = "--timeout must be a positive integer in milliseconds";
-  if (raw) console.log(JSON.stringify({ name, error }));
+  if (raw) await printJsonError(error);
   else console.error(`moshpit-resolve: ${error}`);
   process.exit(1);
 }
 
-if (!parseRegistryName(name)) {
-  const error = "not a Moshpit name (one label and one ending)";
-  console.log(raw ? JSON.stringify({ name, error }) : `${name} — ${error}`);
+if (args.includes("--concurrency") && (
+  !/^\d+$/.test(String(concurrencyValue ?? ""))
+  || !Number.isSafeInteger(Number(concurrencyValue))
+  || Number(concurrencyValue) < 1
+)) {
+  const error = "--concurrency must be a positive integer";
+  if (raw) await printJsonError(error);
+  else console.error(`moshpit-resolve: ${error}`);
   process.exit(1);
 }
 
@@ -71,20 +93,93 @@ const config = {
   parkingBase: value("parking", undefined),
   timeoutMs: timeoutValue === null ? DEFAULT_LOOKUP_TIMEOUT_MS : Number(timeoutValue),
 };
-const {
-  registry: moshpit, decision, destination: url,
-} = await resolutionFor(name, flag("clearnet-resolves"), config);
 
-if (raw) {
-  console.log(JSON.stringify({ name, registry: moshpit, decision, destination: url }, null, 2));
-} else {
-  console.log(`${name}`);
-  console.log(`  registry   ${moshpit ? JSON.stringify(moshpit) : "unreachable"}`);
-  console.log(`  decision   ${decision.use}`);
-  console.log(`  reason     ${decision.reason}`);
-  console.log(`  goes to    ${url ?? "(nowhere — the browser keeps its own answer)"}`);
+const resolutions = new Map();
+
+async function resolveOne(requestedName) {
+  const parsed = parseRegistryName(requestedName);
+  if (!parsed) {
+    return {
+      name: requestedName,
+      error: "not a Moshpit name (one label and one ending)",
+    };
+  }
+
+  const normalized = `${parsed.label}.${parsed.tld}`;
+  let resolution = resolutions.get(normalized);
+  if (!resolution) {
+    resolution = resolutionFor(normalized, flag("clearnet-resolves"), config);
+    resolutions.set(normalized, resolution);
+  }
+
+  const {
+    registry, decision, destination,
+  } = await resolution;
+  return { name: requestedName, registry, decision, destination };
 }
 
-if (flag("strict") && decision.reason === "Moshpit registry not consulted or unreachable") {
-  process.exitCode = 1;
+async function mapWithConcurrency(items, limit, mapper) {
+  const results = new Array(items.length);
+  let next = 0;
+
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (next < items.length) {
+        const index = next++;
+        results[index] = await mapper(items[index]);
+      }
+    },
+  );
+
+  await Promise.all(workers);
+  return results;
+}
+
+function printHuman(result) {
+  if (result.error) {
+    console.log(`${result.name} — ${result.error}`);
+    return;
+  }
+
+  console.log(`${result.name}`);
+  console.log(`  registry   ${result.registry ? JSON.stringify(result.registry) : "unreachable"}`);
+  console.log(`  decision   ${result.decision.use}`);
+  console.log(`  reason     ${result.decision.reason}`);
+  console.log(`  goes to    ${result.destination ?? "(nowhere — the browser keeps its own answer)"}`);
+}
+
+const concurrency = concurrencyValue === null
+  ? DEFAULT_CONCURRENCY
+  : Number(concurrencyValue);
+const results = await mapWithConcurrency(names, concurrency, resolveOne);
+const strictFailure = (result) => (
+  flag("strict")
+  && !result.error
+  && result.decision.reason === "Moshpit registry not consulted or unreachable"
+);
+
+if (names.length === 1) {
+  const result = results[0];
+  if (result.error) {
+    console.log(raw ? JSON.stringify(result) : `${result.name} — ${result.error}`);
+    process.exit(1);
+  }
+
+  if (raw) console.log(JSON.stringify(result, null, 2));
+  else printHuman(result);
+  if (strictFailure(result)) process.exitCode = 1;
+} else {
+  if (raw) {
+    console.log(JSON.stringify(results, null, 2));
+  } else {
+    results.forEach((result, index) => {
+      if (index > 0) console.log("");
+      printHuman(result);
+    });
+  }
+
+  if (results.some((result) => result.error || strictFailure(result))) {
+    process.exitCode = 1;
+  }
 }
