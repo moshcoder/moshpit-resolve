@@ -66,7 +66,7 @@ would only work in one of those places.
 ## CLI
 
 ```sh
-moshpit-resolve <name> [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--strict] [--json]
+moshpit-resolve <name...> [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--concurrency N] [--strict] [--json]
 ```
 
 ```
@@ -85,9 +85,21 @@ Use `--json` when another tool needs the registry answer, decision, reason, and
 destination without parsing the human-readable summary.
 
 By default, an unavailable registry still exits successfully after reporting
-the clearnet fallback. Scripts can add `--strict` to exit non-zero when the
-registry lookup is inconclusive. Resolved, parked, registry-backed clearnet,
-and reserved console decisions still exit successfully.
+the clearnet fallback. Scripts can add `--strict` to exit non-zero when any
+registry lookup is inconclusive; in a batch, one inconclusive lookup fails the
+whole run. Resolved, parked, registry-backed clearnet, and reserved console
+decisions still exit successfully.
+
+Pass more than one name to inspect a batch in a single process. Results stay in
+input order, normalized duplicates share one lookup, and no more than eight
+registry requests run at once by default. Use `--concurrency` to tune that
+limit for a self-hosted registry. Multi-name JSON output is an array, while the
+existing single-name JSON object is unchanged.
+
+```sh
+moshpit-resolve blue.eggs red.eggs missing.eggs --json
+moshpit-resolve one.eggs two.eggs three.eggs --concurrency 2
+```
 
 Registry lookups use an eight-second deadline by default. Scripts and
 self-hosted deployments can lower it without changing the resolution policy:

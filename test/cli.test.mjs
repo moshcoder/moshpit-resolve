@@ -5,9 +5,11 @@ import { createServer } from "node:http";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { DEFAULT_CONCURRENCY } from "../lib/index.mjs";
+
 const BIN = fileURLToPath(new URL("../bin/moshpit-resolve.mjs", import.meta.url));
 
-function run(args) {
+function run(args, { stdoutDelayMs = 0 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [BIN, ...args], {
       stdio: ["ignore", "pipe", "pipe"],
@@ -16,10 +18,14 @@ function run(args) {
     let stderr = "";
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
+    if (stdoutDelayMs > 0) child.stdout.pause();
     child.stdout.on("data", (chunk) => { stdout += chunk; });
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     child.on("error", reject);
     child.on("close", (status) => resolve({ status, stdout, stderr }));
+    if (stdoutDelayMs > 0) {
+      setTimeout(() => child.stdout.resume(), stdoutDelayMs);
+    }
   });
 }
 
@@ -217,6 +223,201 @@ test("--timeout aborts a slow registry lookup", async (t) => {
   assert.ok(elapsed < 1500, `configured timeout took ${elapsed}ms`);
 });
 
+test("--concurrency rejects invalid values before making a request", async () => {
+  for (const value of [undefined, "0", "-1", "1.5", "1e3", "nope"]) {
+    const args = ["blue.eggs", "--concurrency"];
+    if (value !== undefined) args.push(value);
+    const result = await run(args);
+
+    assert.equal(result.status, 1, value);
+    assert.equal(result.stdout, "", value);
+    assert.match(result.stderr, /--concurrency must be a positive integer/, value);
+  }
+
+  const json = await run(["blue.eggs", "--concurrency", "--json"]);
+  assert.equal(json.status, 1);
+  assert.equal(json.stderr, "");
+  assert.deepEqual(JSON.parse(json.stdout), {
+    name: "blue.eggs",
+    error: "--concurrency must be a positive integer",
+  });
+});
+
+test("batch JSON reports global option errors for every requested name", async () => {
+  const cases = [
+    [["--registry"], "--registry requires a URL"],
+    [["--timeout", "0"], "--timeout must be a positive integer in milliseconds"],
+    [["--concurrency", "0"], "--concurrency must be a positive integer"],
+  ];
+
+  for (const [options, error] of cases) {
+    const result = await run(["first.eggs", "second.eggs", ...options, "--json"]);
+
+    assert.equal(result.status, 1, error);
+    assert.equal(result.stderr, "", error);
+    assert.deepEqual(JSON.parse(result.stdout), [
+      { name: "first.eggs", error },
+      { name: "second.eggs", error },
+    ]);
+  }
+
+  const names = Array.from({ length: 3000 }, (_, index) => `mosh.t${index}`);
+  const large = await run(
+    [...names, "--concurrency", "0", "--json"],
+    { stdoutDelayMs: 100 },
+  );
+  const output = JSON.parse(large.stdout);
+
+  assert.equal(large.status, 1);
+  assert.equal(large.stderr, "");
+  assert.equal(output.length, names.length);
+  assert.deepEqual(output.map(({ name }) => name), names);
+});
+
+test("batch JSON reports each name in input order and exits non-zero for invalid input", async (t) => {
+  let requests = 0;
+  const server = createServer((request, response) => {
+    requests++;
+    const name = new URL(request.url, "http://127.0.0.1").searchParams.get("name");
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      registered: true,
+      name_registered: true,
+      resolved: name,
+      target: `${name}.target`,
+    }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const result = await run([
+    "first.eggs", "localhost", "second.eggs",
+    "--moshpit",
+    "--registry", `http://127.0.0.1:${server.address().port}`,
+    "--json",
+  ]);
+  const output = JSON.parse(result.stdout);
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(output.map(({ name }) => name), [
+    "first.eggs", "localhost", "second.eggs",
+  ]);
+  assert.equal(output[0].decision.use, "moshpit");
+  assert.deepEqual(output[1], {
+    name: "localhost",
+    error: "not a Moshpit name (one label and one ending)",
+  });
+  assert.equal(output[2].decision.use, "moshpit");
+  assert.equal(requests, 2);
+});
+
+test("batch human output preserves order and includes invalid names", async () => {
+  const result = await run([
+    "mosh.eggs", "localhost", "mosh.oranges",
+    "--console", "https://console.example",
+  ]);
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  assert.equal(result.stdout, `mosh.eggs
+  registry   unreachable
+  decision   register
+  reason     mosh.eggs is the registration console for .eggs
+  goes to    https://console.example/pit?tld=eggs
+
+localhost — not a Moshpit name (one label and one ending)
+
+mosh.oranges
+  registry   unreachable
+  decision   register
+  reason     mosh.oranges is the registration console for .oranges
+  goes to    https://console.example/pit?tld=oranges
+`);
+});
+
+test("large batch JSON flushes completely before a non-zero exit", async () => {
+  const names = Array.from({ length: 300 }, (_, index) => `mosh.t${index}`);
+  names.splice(150, 0, "localhost");
+
+  const result = await run([
+    ...names, "--console", "https://console.example", "--json",
+  ]);
+  const output = JSON.parse(result.stdout);
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  assert.equal(output.length, names.length);
+  assert.deepEqual(output.map(({ name }) => name), names);
+  assert.deepEqual(output[150], {
+    name: "localhost",
+    error: "not a Moshpit name (one label and one ending)",
+  });
+});
+
+test("batch resolution bounds concurrency and coalesces normalized duplicates", async (t) => {
+  let active = 0;
+  let maxActive = 0;
+  const requests = new Map();
+  const server = createServer((request, response) => {
+    const name = new URL(request.url, "http://127.0.0.1").searchParams.get("name");
+    requests.set(name, (requests.get(name) || 0) + 1);
+    active++;
+    maxActive = Math.max(maxActive, active);
+    setTimeout(() => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({
+        registered: true,
+        name_registered: true,
+        resolved: name,
+        target: `${name}.target`,
+      }));
+      active--;
+    }, 40);
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const registry = `http://127.0.0.1:${server.address().port}`;
+  const names = [
+    "one.eggs", "ONE.EGGS.", "two.eggs", "three.eggs",
+    "four.eggs", "five.eggs", "six.eggs",
+  ];
+  const limited = await run([
+    ...names, "--moshpit", "--registry", registry, "--concurrency", "2", "--json",
+  ]);
+
+  assert.equal(limited.status, 0, limited.stderr || limited.stdout);
+  assert.equal(limited.stderr, "");
+  assert.ok(maxActive > 1, `expected parallel requests, saw ${maxActive}`);
+  assert.ok(maxActive <= 2, `concurrency limit exceeded: ${maxActive}`);
+  assert.equal(requests.get("one.eggs"), 1);
+  assert.equal([...requests.values()].reduce((sum, count) => sum + count, 0), 6);
+  assert.deepEqual(JSON.parse(limited.stdout).map(({ name }) => name), names);
+
+  active = 0;
+  maxActive = 0;
+  requests.clear();
+  const defaultNames = Array.from(
+    { length: DEFAULT_CONCURRENCY + 4 },
+    (_, index) => `default${index}.eggs`,
+  );
+  const defaults = await run([
+    ...defaultNames, "--moshpit", "--registry", registry, "--json",
+  ]);
+
+  assert.equal(defaults.status, 0, defaults.stderr || defaults.stdout);
+  assert.equal(DEFAULT_CONCURRENCY, 8);
+  assert.ok(maxActive > 1, `expected parallel requests, saw ${maxActive}`);
+  assert.ok(
+    maxActive <= DEFAULT_CONCURRENCY,
+    `default concurrency limit exceeded: ${maxActive}`,
+  );
+  assert.deepEqual(JSON.parse(defaults.stdout).map(({ name }) => name), defaultNames);
+});
+
 test("--strict reports an unavailable registry through the exit status", async (t) => {
   let requests = 0;
   const server = createServer((_request, response) => {
@@ -321,4 +522,44 @@ test("--strict preserves human-readable output before failing", async (t) => {
   assert.match(result.stdout, /registry\s+unreachable/);
   assert.match(result.stdout, /decision\s+clearnet/);
   assert.match(result.stdout, /goes to\s+\(nowhere/);
+});
+
+test("batch strict mode fails if any registry lookup is inconclusive", async (t) => {
+  const server = createServer((request, response) => {
+    const name = new URL(request.url, "http://127.0.0.1").searchParams.get("name");
+    if (name === "missing.eggs") {
+      response.writeHead(503);
+      response.end();
+      return;
+    }
+
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end(JSON.stringify({
+      name_registered: true,
+      resolved: name,
+      target: "203.0.113.9",
+    }));
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+
+  const args = [
+    "live.eggs", "missing.eggs",
+    "--moshpit",
+    "--registry", `http://127.0.0.1:${server.address().port}`,
+    "--json",
+  ];
+  const normal = await run(args);
+  const strict = await run([...args, "--strict"]);
+
+  assert.equal(normal.status, 0, normal.stderr || normal.stdout);
+  assert.equal(strict.status, 1);
+  assert.equal(strict.stderr, "");
+  assert.deepEqual(JSON.parse(strict.stdout), JSON.parse(normal.stdout));
+  assert.equal(JSON.parse(strict.stdout)[0].decision.use, "moshpit");
+  assert.equal(
+    JSON.parse(strict.stdout)[1].decision.reason,
+    "Moshpit registry not consulted or unreachable",
+  );
 });
