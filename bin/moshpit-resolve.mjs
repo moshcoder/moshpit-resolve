@@ -10,7 +10,7 @@ import {
 
 const USAGE = `moshpit-resolve — where a Moshpit name would send you
 
-  moshpit-resolve <name> [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS]
+  moshpit-resolve <name> [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--strict]
 
   --moshpit             let a registered name beat a clearnet answer
   --clearnet-resolves   pretend the real internet has an answer for this name
@@ -18,6 +18,7 @@ const USAGE = `moshpit-resolve — where a Moshpit name would send you
   --console URL         a custom namespace management console
   --parking URL         a custom base for unpointed names
   --timeout MS          registry request deadline (default: ${DEFAULT_LOOKUP_TIMEOUT_MS})
+  --strict              fail when the registry lookup is inconclusive
   --json                print a machine-readable resolution decision
 
 Prints the destination and the reason for it. No browser, no navigation.`;
@@ -82,4 +83,8 @@ if (raw) {
   console.log(`  decision   ${decision.use}`);
   console.log(`  reason     ${decision.reason}`);
   console.log(`  goes to    ${url ?? "(nowhere — the browser keeps its own answer)"}`);
+}
+
+if (flag("strict") && decision.reason === "Moshpit registry not consulted or unreachable") {
+  process.exitCode = 1;
 }
