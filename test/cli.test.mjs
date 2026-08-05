@@ -48,6 +48,70 @@ function run(args, {
   });
 }
 
+test("--ndjson prints one compact decision per input in order", async () => {
+  const result = await run([
+    "mosh.eggs", "localhost", "mosh.apples",
+    "--console", "https://console.example", "--ndjson",
+  ]);
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  const lines = result.stdout.trimEnd().split("\n");
+  assert.equal(lines.length, 3);
+  assert.ok(lines.every((line) => !line.startsWith(" ")));
+  const records = lines.map((line) => JSON.parse(line));
+  assert.deepEqual(records.map(({ name }) => name), [
+    "mosh.eggs", "localhost", "mosh.apples",
+  ]);
+  assert.equal(records[0].destination, "https://console.example/pit?tld=eggs");
+  assert.equal(records[1].error, "not a Moshpit name (one label and one ending)");
+  assert.equal(records[2].destination, "https://console.example/pit?tld=apples");
+});
+
+test("--ndjson keeps a single result on one compact line", async () => {
+  const result = await run([
+    "mosh.eggs", "--console", "https://console.example", "--ndjson",
+  ]);
+
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.equal(result.stderr, "");
+  assert.equal(result.stdout.trimEnd().split("\n").length, 1);
+  assert.equal(JSON.parse(result.stdout).name, "mosh.eggs");
+});
+
+test("--ndjson emits no records for an empty stdin batch", async () => {
+  const result = await run(["--stdin", "--ndjson"], { stdin: " \n\t " });
+
+  assert.equal(result.status, 0);
+  assert.equal(result.stdout, "");
+  assert.equal(result.stderr, "");
+});
+
+test("machine-readable output flags are mutually exclusive", async () => {
+  const result = await run(["blue.eggs", "--json", "--ndjson"]);
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  assert.deepEqual(JSON.parse(result.stdout), {
+    name: "blue.eggs",
+    error: "--json and --ndjson cannot be used together",
+  });
+});
+
+test("batch option errors use one NDJSON record per requested name", async () => {
+  const result = await run([
+    "blue.eggs", "red.eggs", "--registry", "--ndjson",
+  ]);
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stderr, "");
+  const records = result.stdout.trimEnd().split("\n").map((line) => JSON.parse(line));
+  assert.deepEqual(records, [
+    { name: "blue.eggs", error: "--registry requires a URL" },
+    { name: "red.eggs", error: "--registry requires a URL" },
+  ]);
+});
+
 test("--json prints the complete machine-readable resolution", async () => {
   let requests = 0;
   const server = createServer((_request, response) => {
@@ -88,6 +152,11 @@ test("--json prints the complete machine-readable resolution", async () => {
       },
       destination: `http://127.0.0.1:${port}/n/blue.eggs`,
     });
+    assert.equal(
+      result.stdout,
+      `${JSON.stringify(JSON.parse(result.stdout), null, 2)}\n`,
+      "--json should preserve its indented output",
+    );
     assert.equal(requests, 1, "the CLI should make one registry request per resolution");
   } finally {
     await new Promise((resolve) => server.close(resolve));

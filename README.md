@@ -66,7 +66,7 @@ would only work in one of those places.
 ## CLI
 
 ```sh
-moshpit-resolve [<name...>] [--stdin] [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--concurrency N] [--strict] [--json]
+moshpit-resolve [<name...>] [--stdin] [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--concurrency N] [--strict] [--json | --ndjson]
 ```
 
 ```
@@ -83,6 +83,13 @@ every navigation, and the thing you need when a name goes somewhere unexpected.
 
 Use `--json` when another tool needs the registry answer, decision, reason, and
 destination without parsing the human-readable summary.
+Use `--ndjson` for batch pipelines that consume one compact JSON object per
+line. Input order and exit-status rules are identical to `--json`; an empty
+stdin batch emits no records. The two output flags are mutually exclusive.
+
+```sh
+moshpit-resolve blue.eggs red.eggs --ndjson | jq -c 'select(.destination)'
+```
 
 By default, an unavailable registry still exits successfully after reporting
 the clearnet fallback. Scripts can add `--strict` to exit non-zero when any
