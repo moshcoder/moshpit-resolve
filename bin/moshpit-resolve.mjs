@@ -10,7 +10,7 @@ import {
 
 const USAGE = `moshpit-resolve — where a Moshpit name would send you
 
-  moshpit-resolve [<name...>] [--stdin] [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--concurrency N] [--strict] [--json]
+  moshpit-resolve [<name...>] [--stdin] [--moshpit] [--clearnet-resolves] [--registry URL] [--console URL] [--parking URL] [--timeout MS] [--concurrency N] [--strict] [--json | --ndjson]
 
   --moshpit             let a registered name beat a clearnet answer
   --clearnet-resolves   pretend the real internet has an answer for this name
@@ -22,6 +22,7 @@ const USAGE = `moshpit-resolve — where a Moshpit name would send you
   --strict              fail when any registry lookup is inconclusive
   --stdin               append whitespace-delimited names from standard input
   --json                print a machine-readable resolution decision
+  --ndjson              print one compact JSON decision per line
 
 Prints the destination and the reason for it. No browser, no navigation.`;
 
@@ -41,7 +42,8 @@ const value = (n, d) => {
   const candidate = i >= 0 ? args[i + 1] : null;
   return candidate && !candidate.startsWith("-") ? candidate : d;
 };
-const raw = flag("json");
+const ndjson = flag("ndjson");
+const raw = flag("json") || ndjson;
 const timeoutValue = value("timeout", null);
 const concurrencyValue = value("concurrency", null);
 const jsonError = (error) => {
@@ -49,15 +51,29 @@ const jsonError = (error) => {
   if (names.length === 1) return { name, error };
   return names.map((requestedName) => ({ name: requestedName, error }));
 };
+const machineText = (value, space) => {
+  if (ndjson) {
+    const records = Array.isArray(value) ? value : [value];
+    return records.map((record) => JSON.stringify(record)).join("\n");
+  }
+  return JSON.stringify(value, null, space);
+};
+const printMachine = (value) => {
+  const output = machineText(value, 2);
+  if (output) console.log(output);
+};
 const printJsonError = (error) => new Promise((resolve, reject) => {
-  const output = `${JSON.stringify(
-    jsonError(error), null, names.length > 1 ? 2 : undefined,
-  )}\n`;
+  const output = `${machineText(jsonError(error), names.length > 1 ? 2 : undefined)}\n`;
   process.stdout.write(output, (writeError) => {
     if (writeError) reject(writeError);
     else resolve();
   });
 });
+
+if (flag("json") && ndjson) {
+  await printJsonError("--json and --ndjson cannot be used together");
+  process.exit(1);
+}
 
 for (const option of ["registry", "console", "parking"]) {
   if (flag(option) && value(option, null) === null) {
@@ -186,12 +202,12 @@ if (names.length === 1) {
     process.exit(1);
   }
 
-  if (raw) console.log(JSON.stringify(result, null, 2));
+  if (raw) printMachine(result);
   else printHuman(result);
   if (strictFailure(result)) process.exitCode = 1;
 } else {
   if (raw) {
-    console.log(JSON.stringify(results, null, 2));
+    printMachine(results);
   } else {
     results.forEach((result, index) => {
       if (index > 0) console.log("");
