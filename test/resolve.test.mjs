@@ -241,4 +241,9 @@ test("dashes are not part of a Moshpit name", () => {
   }
   assert.deepEqual(parseRegistryName("california.oranges"), { label: "california", tld: "oranges" });
   assert.deepEqual(parseRegistryName("blue.420"), { label: "blue", tld: "420" });
+  // Both halves numeric is refused by the registry (reads as an abbreviated
+  // IPv4 literal), so the port refuses it too — otherwise a tab lands on a
+  // parking page for a name the registry can never register.
+  assert.equal(parseRegistryName("1.420"), null, "1.420");
+  assert.equal(parseRegistryName("420.187"), null, "420.187");
 });
